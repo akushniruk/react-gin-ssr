@@ -13,7 +13,35 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/openware/kaigara/pkg/vault"
 	"github.com/openware/sonic"
+
+	"github.com/akushniruk/react-gin-ssr/render"
+	"github.com/akushniruk/react-gin-ssr/postcode"
 )
+
+var config *Config
+var engine *render.Engine
+
+type Config struct {
+	polyfillLocation string
+	scriptLocation   string
+	templateLocation string
+	staticDir        string
+	port             string
+}
+
+func init() {
+	c := new(Config)
+
+	pwd, _ := os.Getwd()
+	c.polyfillLocation = pwd + "/react-src/react-build/duktape-polyfill.js"
+	c.scriptLocation = pwd + "/react-src/react-build/static/js/server.js"
+	c.templateLocation = pwd + "/react-src/react-build/index.html"
+	c.staticDir = pwd + "/react-src/react-build"
+	c.port = "8080"
+	config = c
+
+	engine = render.NewEngine(c.polyfillLocation, c.scriptLocation, c.templateLocation)
+}
 
 // Version variable stores Application Version from main package
 var (
@@ -41,11 +69,14 @@ func Setup(app *sonic.Runtime) {
 	log.Println("DeploymentID in config:", app.Conf.DeploymentID)
 
 	// Serve static files
-	router.Static("/public", "./public")
+	fs := http.FileServer(http.Dir(config.staticDir))
 
-	router.GET("/", index)
-	router.GET("/page", emptyPage)
-	router.GET("/version", version)
+	http.Handle("/static/js/", fs)
+	http.Handle("/static/css/", fs)
+	http.Handle("/images/", fs)
+
+	http.HandleFunc("/postcode/", postcode.HandlePostcodeQuery)
+	http.HandleFunc("/", handleDynamicRoute)
 
 	SetPageRoutes(router)
 
@@ -132,4 +163,32 @@ func FilesPaths(pattern string) ([]string, error) {
 	}
 
 	return matches, nil
+}
+
+
+func handleDynamicRoute(w http.ResponseWriter, r *http.Request) {
+	renderedTemplate := engine.Render(r.URL.Path, resolveServerSideState())
+	w.Write([]byte(renderedTemplate))
+}
+
+type serverSideState struct {
+	PostcodeQuery string              `json:"postcodeQuery"`
+	Postcodes     []postcode.Postcode `json:"postcodes"`
+}
+
+func resolveServerSideState() string {
+
+	initialPostcode := "ST3"
+
+	serverSideState := serverSideState{}
+	serverSideState.PostcodeQuery = initialPostcode
+	serverSideState.Postcodes = postcode.FetchPostcodes(initialPostcode)
+
+	serverSideStateJSON, err := json.Marshal(serverSideState)
+	if err != nil {
+		// TODO Handle this properly
+		fmt.Println(err)
+	}
+
+	return string(serverSideStateJSON)
 }
